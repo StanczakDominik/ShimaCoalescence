@@ -31,14 +31,25 @@ def terminal_velocity(radius):
     return velocities
 
 def pairwise_probabilities(multiplicities, radii, dt, V, E_jk):
-    breakpoint()
-    terminal_velocities = terminal_velocity(radii)
     N = radii.size
-    pairs = np.random.permutation(range((N//2)*2)).reshape(int(N/2), 2)
-    j_indices, k_indices = pairs.T
-    P_pairs = E_jk * np.pi * (radii[j_indices] + radii[k_indices])**2 * dt / V * \
-                     np.abs(terminal_velocities[j_indices] - terminal_velocities[k_indices])
-    return j_indices, k_indices, P_pairs
+    pairs = np.random.permutation(range((N//2)*2))
+    permuted_multiplicities = multiplicities[pairs]
+    permuted_radii = radii[pairs]
+    terminal_velocities = terminal_velocity(permuted_radii)
+    max_multiplicities = np.max(np.vstack((permuted_multiplicities[::2],
+                                           permuted_multiplicities[1::2])), axis=0)
+
+    P_pairs = E_jk * np.pi * (permuted_radii[::2] + permuted_radii[1::2])**2 * dt / V * \
+        np.abs(terminal_velocities[::2] - terminal_velocities[1::2])
+
+    fixed_probabilities = max_multiplicities * P_pairs * N * (N-1) / (2 * int(N/2))
+    random_numbers = np.random.random(fixed_probabilities.size)
+    coalescing_pairs = fixed_probabilities > random_numbers
+    coalescing_pair_indices = pairs.reshape(int(N/2), 2)[coalescing_pairs]
+    print(coalescing_pair_indices.shape)
+    # TODO handle case of no output
+    breakpoint()
+    return coalescing_pair_indices
 
 def apply_coalescence(multiplicity_j, radius_j, multiplicity_k, radius_k):
 #     if multiplicity_j == multiplicity_k == 1:
@@ -64,7 +75,7 @@ def apply_coalescence(multiplicity_j, radius_j, multiplicity_k, radius_k):
         raise ValueError("wat")
     return new_multiplicity_j, new_radius_j, new_multiplicity_k, new_radius_k
 
-def vector_coalescence(multiplicity, radii, j_indices, k_indices):
+def vector_coalescence(multiplicity, radii, coalescing_pairs):
     # TODO try np.take
     multiplicity_j = multiplicity[j_indices]
     multiplicity_k = multiplicity[k_indices]
@@ -89,7 +100,7 @@ def simulation(multiplicity, radii, NT, V, E_jk, dt = 0.01 * u.s):
     diagnostics = []
     for i in tqdm(range(NT)):
         N = radii.size # this can change dynamically
-        indices_j, indices_k, P_jk = pairwise_probabilities(radii, dt, V, E_jk)
+        indices_j, indices_k, P_jk = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
         multiplicities_j = multiplicity[indices_j]
         multiplicities_k = multiplicity[indices_k]
         max_multiplicities = np.max(np.vstack((multiplicities_j, multiplicities_k)), axis=0)
@@ -119,7 +130,7 @@ def simulation(multiplicity, radii, NT, V, E_jk, dt = 0.01 * u.s):
     return diagnostics, tables
 
 if __name__ == "__main__":
-    np.random.seed(0)
+    np.random.seed(4)
 
     V = 1e6 * u.m**3 # coalescence cell volume
     n0 = 100 / u.cm**3 # initial number density of droplets
@@ -135,9 +146,8 @@ if __name__ == "__main__":
     radii = (3 * volumes / (4 * np.pi))**(1/3)
     E_jk = 0.5 # TODO
 
-    breakpoint()
     N = radii.size # this can change dynamically
-    indices_j, indices_k, P_jk = pairwise_probabilities(radii, dt, V, E_jk)
+    indices_j, indices_k, P_jk = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
     # indices_j: array([3615, 9180, 3601, ..., 1386, 5634, 3932]), (5000,)
     # P_jk: <Quantity [7.46711490e-19, 9.23716135e-19, 3.39917593e-18, ...,
     #       3.67174827e-18, 1.72423352e-18, 3.69688307e-18]>, (5000,)

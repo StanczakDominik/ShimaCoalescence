@@ -1,0 +1,4 @@
+*.pickle
+*.json
+*.png
+.ipynb_checkpoints

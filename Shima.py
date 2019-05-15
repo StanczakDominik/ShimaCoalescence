@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from astropy import units as u
+from astropy import constants
 from tqdm import tqdm
 from scipy.stats import expon
 import matplotlib.pyplot as plt
@@ -15,19 +16,37 @@ from IPython.display import display
 # with quantity_support():
 #     seaborn.distplot(volumes)
 
-# np.sum(radii < 40*u.micrometer) / len(radii)
-
-# np.sum(radii > 600*u.micrometer) / len(radii)
-
-def terminal_velocity(radius):
+def terminal_velocity(radius, rho_a = None, rho_a0 = 1.2e-3 * u.g * u.cm**-3):
+    if rho_a is None:
+        rho_a = rho_a0
     """ Rogers (1976), page 2 of Terminal Velocities of Droplets and Crystals: Power Laws with Continuous Parameters over the Size Spectrum
     """
     k1 = 1.19e6 / u.cm / u.s
     k2 = 8e3 / u.s
     indices_turbulent = radius > 40 * u.micrometer
+    indices_sqrt = radius > 600 * u.micrometer
     velocities = u.Quantity(np.empty(radius.size), unit=u.m/u.s)
     velocities[indices_turbulent] = k1 * radius[indices_turbulent] ** 2
     velocities[~indices_turbulent] = k2 * radius[~indices_turbulent]
+    # TODO get some rho_a0, rho_a approximations)
+    k3 = 2.2e3 * u.cm**0.5 / u.s * (rho_a0 / rho_a) ** 0.5
+    velocities[indices_sqrt] = k3 * radius[indices_sqrt]**0.5
+    return velocities
+
+def better_terminal_velocity(radius,
+                             a_re = 1,
+                             nu = 1,
+                             b_re = 1,
+                             rho_w = 1,
+                             g = 9.81 * u.g0,
+                             rho_a = 1,
+                             ):
+    # TODO prześledzić 
+    A = a_re * nu ** (1 - 2 * b_re) * (4 / 3 * rho_w * g / rho_a)**b_re
+    B = 3 * b_re - 1
+    
+    velocities = A * (2 * radius) ** B
+    velocities = None
     return velocities
 
 def pairwise_probabilities(multiplicities, radii, dt, V, E_jk):
@@ -46,9 +65,6 @@ def pairwise_probabilities(multiplicities, radii, dt, V, E_jk):
     random_numbers = np.random.random(fixed_probabilities.size)
     coalescing_pairs = fixed_probabilities > random_numbers
     coalescing_pair_indices = pairs.reshape(int(N/2), 2)[coalescing_pairs]
-    print(coalescing_pair_indices.shape)
-    # TODO handle case of no output
-    breakpoint()
     return coalescing_pair_indices
 
 def apply_coalescence(multiplicity_j, radius_j, multiplicity_k, radius_k):
@@ -76,11 +92,36 @@ def apply_coalescence(multiplicity_j, radius_j, multiplicity_k, radius_k):
     return new_multiplicity_j, new_radius_j, new_multiplicity_k, new_radius_k
 
 def vector_coalescence(multiplicity, radii, coalescing_pairs):
-    # TODO try np.take
-    multiplicity_j = multiplicity[j_indices]
-    multiplicity_k = multiplicity[k_indices]
-    equals = multiplicity_j == multiplicity_k
-#     multiplicity[equals &]
+    coalescing_multiplicity = multiplicity[coalescing_pairs]
+    coalescing_radii = radii[coalescing_pairs]
+    multiplicities_j, multiplicities_k = coalescing_multiplicity.T
+    radii_j, radii_k = coalescing_radii.T
+
+    new_radii = (radii_j**3 + radii_k**3)**(1/3)
+
+    indices_equal = multiplicities_j == multiplicities_k
+    indices_j = multiplicities_j > multiplicities_k
+    indices_k = multiplicities_j < multiplicities_k
+
+    new_multiplicities_j = np.floor(multiplicities_j[indices_equal] / 2).astype(int)
+    multiplicities_k[indices_equal] = multiplicities_j[indices_equal] - new_multiplicities_j
+    multiplicities_j[indices_equal] = new_multiplicities_j
+    radii_j[indices_equal] = radii_k[indices_equal] = new_radii[indices_equal]
+
+    multiplicities_j[indices_j] -= multiplicities_k[indices_j]
+    radii_k[indices_j] = new_radii[indices_j]
+
+    multiplicities_k[indices_k] -= multiplicities_j[indices_k]
+    radii_j[indices_k] = new_radii[indices_k]
+
+    rewrite_indices_j, rewrite_indices_k = coalescing_pairs.T
+
+    multiplicity[rewrite_indices_j] = multiplicities_j
+    multiplicity[rewrite_indices_j] = multiplicities_j
+    radii[rewrite_indices_j] = radii_j
+    radii[rewrite_indices_k] = radii_k
+
+    
 
 def droplet_number_density(multiplicity, V):
     return np.sum(multiplicity) / V
@@ -100,23 +141,15 @@ def simulation(multiplicity, radii, NT, V, E_jk, dt = 0.01 * u.s):
     diagnostics = []
     for i in tqdm(range(NT)):
         N = radii.size # this can change dynamically
-        indices_j, indices_k, P_jk = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
-        multiplicities_j = multiplicity[indices_j]
-        multiplicities_k = multiplicity[indices_k]
-        max_multiplicities = np.max(np.vstack((multiplicities_j, multiplicities_k)), axis=0)
-        fixed_probabilities = max_multiplicities * P_jk * N * (N-1) / (2 * int(N/2))
-        random_numbers = np.random.random(fixed_probabilities.size)
-        coalescing_pairs = fixed_probabilities > random_numbers
-        num_coalesced = coalescing_pairs.sum()
-        for j, k in zip(indices_j[coalescing_pairs], indices_k[coalescing_pairs]): # TODO rewrite this in array style
-            multiplicity[j], radii[j], multiplicity[k], radii[k] = apply_coalescence(multiplicity[j], radii[j], multiplicity[k], radii[k])
+        coalescing_pair_indices = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
+        vector_coalescence(multiplicity, radii, coalescing_pair_indices)
         removed_particles = multiplicity == 0
         multiplicity = multiplicity[~removed_particles]
         radii = radii[~removed_particles]
         if (i % 10) == 0:
             diagnostics.append({
                 "N_superdroplets":N,
-                "num_coalesced":num_coalesced,
+                "num_coalesced":2 * len(coalescing_pair_indices),
                 # "mean_probability":fixed_probabilities.mean(),
                 "droplet_number_density":droplet_number_density(multiplicity, V).si.value,
                 "mean_radius":radii.si.value.mean(),
@@ -134,7 +167,7 @@ if __name__ == "__main__":
 
     V = 1e6 * u.m**3 # coalescence cell volume
     n0 = 100 / u.cm**3 # initial number density of droplets
-    N = 10000   # initial number of super-droplets
+    N = int(1e5) # initial number of super-droplets
     dt = 0.01 * u.s
 
     multiplicity = (n0*V/N * np.ones(N)).astype(int).si
@@ -146,44 +179,45 @@ if __name__ == "__main__":
     radii = (3 * volumes / (4 * np.pi))**(1/3)
     E_jk = 0.5 # TODO
 
-    N = radii.size # this can change dynamically
-    indices_j, indices_k, P_jk = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
-    # indices_j: array([3615, 9180, 3601, ..., 1386, 5634, 3932]), (5000,)
-    # P_jk: <Quantity [7.46711490e-19, 9.23716135e-19, 3.39917593e-18, ...,
-    #       3.67174827e-18, 1.72423352e-18, 3.69688307e-18]>, (5000,)
+    # N = radii.size # this can change dynamically
+    # indices_j, indices_k, P_jk = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
+    # # indices_j: array([3615, 9180, 3601, ..., 1386, 5634, 3932]), (5000,)
+    # # P_jk: <Quantity [7.46711490e-19, 9.23716135e-19, 3.39917593e-18, ...,
+    # #       3.67174827e-18, 1.72423352e-18, 3.69688307e-18]>, (5000,)
     
-    # TODO filter out as much as possible on P_jk first
+    # # TODO filter out as much as possible on P_jk first
 
-    multiplicities_j = multiplicity[indices_j]
-    multiplicities_k = multiplicity[indices_k]
+    # multiplicities_j = multiplicity[indices_j]
+    # multiplicities_k = multiplicity[indices_k]
 
-    max_multiplicities = np.max(np.vstack((multiplicities_j, multiplicities_k)), axis=0)
-    # array([1.e+10, 1.e+10, 1.e+10, ..., 1.e+10, 1.e+10, 1.e+10]), (5000,)
-    fixed_probabilities = max_multiplicities * P_jk * N * (N-1) / (2 * int(N/2)) # (5000,)
-    random_numbers = np.random.random(fixed_probabilities.size)
-    coalescing_pairs = fixed_probabilities > random_numbers # (5000,) bool for every pair
-    # this could be simplified: turn output of pairwise_probabilities into a list of tuples, filtering on coalescing_pairs
+    # max_multiplicities = np.max(np.vstack((multiplicities_j, multiplicities_k)), axis=0)
+    # # array([1.e+10, 1.e+10, 1.e+10, ..., 1.e+10, 1.e+10, 1.e+10]), (5000,)
+    # fixed_probabilities = max_multiplicities * P_jk * N * (N-1) / (2 * int(N/2)) # (5000,)
+    # random_numbers = np.random.random(fixed_probabilities.size)
+    # coalescing_pairs = fixed_probabilities > random_numbers # (5000,) bool for every pair
+    # # this could be simplified: turn output of pairwise_probabilities into a list of tuples, filtering on coalescing_pairs
 
-    sequential_multiplicity = multiplicity.copy()
+    # sequential_multiplicity = multiplicity.copy()
 
-    """ list of tuples = filtered_pairwise_probabilities 
-    """
-    for j, k in zip(indices_j[coalescing_pairs], indices_k[coalescing_pairs]): # TODO rewrite this in array style
-        sequential_multiplicity[j], _, sequential_multiplicity[k], _ = apply_coalescence(multiplicity[j], radii[j], multiplicity[k], radii[k])
+    # """ list of tuples = filtered_pairwise_probabilities 
+    # """
+    # for j, k in zip(indices_j[coalescing_pairs], indices_k[coalescing_pairs]): # TODO rewrite this in array style
+    #     sequential_multiplicity[j], _, sequential_multiplicity[k], _ = apply_coalescence(multiplicity[j], radii[j], multiplicity[k], radii[k])
 
-    vector_multiplicity, vector_radius = vector_coalescence(multiplicity, radii, indices_j, indices_k)
+    # coalescing_pair_indices = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
+    # vector_coalescence(multiplicity, radii, coalescing_pair_indices)
 
-    # diagnostics, tables = simulation(multiplicity, radii, int(50), V, E_jk=E_jk)
-    # df = pd.DataFrame(diagnostics)
-    # df.to_pickle("shima2.json")
-    # fig, axes = plt.subplots(len(df.columns), sharex=True)
-    # for col, ax in zip(df.columns, axes):
-    #     ax.plot(df[col], label=col)
-    #     ax.set_title(col)
-    #     ax.legend(loc='best')
-    #     ax.set_xlim(0, len(df))
-    # display(df.tail())
-    # plt.savefig("Shima2.png")
-    # plt.show()
+    diagnostics, tables = simulation(multiplicity, radii, int(1e4), V, E_jk=E_jk)
+    df = pd.DataFrame(diagnostics)
+    df.to_pickle("shima2.json")
+    fig, axes = plt.subplots(len(df.columns), sharex=True)
+    for col, ax in zip(df.columns, axes):
+        ax.plot(df[col], label=col)
+        ax.set_title(col)
+        ax.legend(loc='best')
+        ax.set_xlim(0, len(df))
+    display(df.tail())
+    plt.savefig("Shima2.png")
+    plt.show()
 
 

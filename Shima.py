@@ -3,7 +3,6 @@ import pandas
 from astropy import units as u
 from astropy import constants
 import tqdm
-from scipy.stats import expon
 import matplotlib.pyplot as plt
 import seaborn
 from astropy.visualization import quantity_support
@@ -128,8 +127,20 @@ def radar_reflectivity_factor(multiplicity, radius, V, z0=1*u.mm**6*u.mm**-3):
     Z = 10 * np.log10(z/z0)
     return Z
 
+def W_estimator(Y, sigma):
+    return np.exp(-Y**2 / (2 * sigma**2)) / (np.sqrt(2 * np.pi) * sigma)
+
+def g_estimator(multiplicity, radii, masses, V, sigma0=0.62):
+    sigma = sigma0 * radii.size**(-1/5)
+    logRadii = np.log(radii.si.value)
+    logRadiiPlot = np.linspace(logRadii.min() - 2, logRadii.max() + 2, 2000)
+    argW = logRadiiPlot.reshape(1, logRadiiPlot.size) - logRadii[:, np.newaxis]
+    W = W_estimator(argW, sigma)
+    return logRadiiPlot, np.sum((multiplicity * masses)[:, np.newaxis] * W, axis=0) / V
+
+
 def simulation(multiplicity, radii, masses, NT, V, E_jk, dt = 0.01 * u.s):
-    tables = [{"multiplicity":multiplicity, "radii":radii}]
+    tables = []
     multiplicity = multiplicity.copy()
     radii = radii.copy()
     masses = masses.copy()
@@ -140,44 +151,30 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt = 0.01 * u.s):
         coalescing_pair_indices, gamma = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
         if len(coalescing_pair_indices) > 0:
             simple_coalescence(multiplicity, radii, masses, coalescing_pair_indices, gamma)
+
         removed_particles = multiplicity == 0
         multiplicity = multiplicity[~removed_particles]
         radii = radii[~removed_particles]
         masses = masses[~removed_particles]
+
         if (i % 100) == 0:
             current_diagnostics = {
                 "i": i,
                 "t": i * dt.si.value,
                 "N_superdroplets":N,
-                "num_coalesced":2 * len(coalescing_pair_indices),
+                # "num_coalesced":2 * len(coalescing_pair_indices),
                 "droplet_number_density":droplet_number_density(multiplicity, V).si.value,
                 "mean_radius":radii.si.value.mean(),
+                "median_radius":np.median(radii.si.value)
             }
+            
+            tables.append({"g": g_estimator(multiplicity, radii, masses, V), "i": i, "t": i * dt.si.value})
             diagnostics.append(current_diagnostics)
-            # tqdm.set_postfix(current_diagnostics)
+            progressbar.set_postfix(**current_diagnostics)
     return diagnostics, tables
 
 if __name__ == "__main__":
-    np.random.seed(4)
-
-    V = 1e6 * u.m**3 # coalescence cell volume
-    n0 = 900 / u.cm**3 # initial number density of droplets
-    N = int(1e5) # initial number of super-droplets
-    dt = 0.1 * u.s
-    NT = int(1e4)
-
-    multiplicity = (n0*V/N * np.ones(N)).si.astype(int)
-    r_average = 30.531 * u.micron
-    v_average = 4 * np.pi / 3 * r_average ** 3
-    exponential_distribution = expon(0, v_average.to(u.m**3))
-
-    volumes = exponential_distribution.rvs(N) * u.m**3
-    radii = (3 * volumes / (4 * np.pi))**(1/3)
-    density_solute = 1 * u.g / u.m**3
-    masses = volumes * density_solute
-    E_jk = 2
-
-    new_run = True
+    from config import *
 
     if new_run:
         diagnostics, tables = simulation(multiplicity, radii, masses, NT, V, E_jk=E_jk, dt = dt)
@@ -185,20 +182,38 @@ if __name__ == "__main__":
         df.to_json("shima2.json")
     else:
         df = pandas.read_json("shima2.json")
-    plotted = ["N_superdroplets", "droplet_number_density", "mean_radius"]
+    plotted = ["N_superdroplets", "droplet_number_density", "mean_radius",
+               # "median_radius",
+               ]
     fig, axes = plt.subplots(len(plotted), sharex=True)
     # this is not sorted for some reason
+    drizzle_cutoff = 100 * u.um
+    rain_cutoff = 1 * u.mm
     with quantity_support():
         for col, ax in zip(plotted, axes):
             ax.semilogy(df.t, df[col], "o", label=col)
             ax.set_title(col)
             ax.set_xlim(df.t.min(), df.t.max())
-            if col == "mean_radius":
-                ax.axhline(100 * u.um, color="k", label="mżawka - górna granica")
-                ax.axhline(1 * u.mm, color="r", label="deszcz - górna granica")
+            if "radius" in col:
+                ax.axhline(drizzle_cutoff, color="k", label="mżawka - górna granica")
+                ax.axhline(rain_cutoff, color="r", label="deszcz - górna granica")
             ax.legend(loc='best')
+        fig.savefig("Shima2.png")
+        try:
+            tables
+            fig2, axis2 = plt.subplots()
+            for T in tables:
+                logR, logRestim = T['g']
+                axis2.semilogx(np.exp(logR), logRestim, label=f"t = {T['t']:.1f} s")
+            axis2.axvline(drizzle_cutoff, color="k", label="mżawka - górna granica")
+            axis2.axvline(rain_cutoff, color="r", label="deszcz - górna granica")
+            axis2.legend(loc='best')
+            fig2.savefig("Shima2_radii.png")
+        except NameError:
+            pass
+
+
     display(df.tail())
-    plt.savefig("Shima2.png")
     plt.show()
 
 

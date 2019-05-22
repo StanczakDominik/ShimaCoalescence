@@ -10,6 +10,9 @@ import math
 from IPython.display import display
 import numba
 
+drizzle_cutoff = 100 * u.um
+rain_cutoff = 1 * u.mm
+
 def terminal_velocity(radius, rho_a = None, rho_a0 = 1.2e-3 * u.g * u.cm**-3):
     if rho_a is None:
         rho_a = rho_a0
@@ -28,27 +31,74 @@ def terminal_velocity(radius, rho_a = None, rho_a0 = 1.2e-3 * u.g * u.cm**-3):
     return velocities
 
 def better_terminal_velocity(radius,
-                             a_re = 1,
-                             nu = 1,
-                             b_re = 1,
-                             rho_w = 1,
-                             g = 9.81 * constants.g0,
-                             rho_a = 1,
+                             eta = (1.81e-5 * u.kg / (u.m * u.s)).si.value,    # fluid dynamic viscosity
+                             rho_F = (1.2754 * u.kg / u.m**3).si.value,  # fluid density - assumed IUPAC for dry (!) air
+                             rho_b = (997 * u.kg / u.m**3).si.value,  # body density - assumed water
+                             g = constants.g0.si.value,
+                             c_1 = 0.0902,
+                             delta_0 = 9.06,
+                             C_0 = 0.29,
+                             alpha = 0.524,
+                             beta = 3,
+                             sigma = 2,
+                             gamma = 0.785,
                              ):
-    # TODO prześledzić 
-    A = a_re * nu ** (1 - 2 * b_re) * (4 / 3 * rho_w * g / rho_a)**b_re
-    B = 3 * b_re - 1
+    nu = eta / rho_F          # fluid kinematic viscosity
+    D = 2 * radius            # maximum dimension of the body - diameter
+    vb = 4/3 * np.pi * radius ** 3  # body volume - droplet assumed spherical
+    Area = np.pi * radius ** 2   # cross sectional area
+    X = 2 * vb * (rho_b - rho_F) * g * D**2 / (Area * rho_F * nu**2)
+    # phi = (delta_0**2 / 4) * ((1 + c_1 * X**0.5)**0.5 -1)**2
+    # phiprime = ((1 + c_1 * X ** 0.5)**0.5 -1) * (1 + c_1 * X**0.5)**(-0.5) * X **(-0.5) / (2 * C_0**0.5)
+    # b_re = X * phiprime / phi
+    # a_re = phi / X ** b_re
+
+    parenthesis = (1 + c_1 * X**0.5)
+    b_re = 0.5 * c_1 * X ** 0.5 * (parenthesis**0.5 -1)**-1 * parenthesis**-0.5
+    a_re = (delta_0**2 / 4) * (parenthesis ** 0.5 -1)**2 / X ** b_re
+    A = a_re * nu ** (1 - 2 * b_re) * (2 * alpha * g / (rho_F * gamma))**b_re
+    B = b_re * (beta - sigma + 2) - 1
     
-    velocities = A * (2 * radius) ** B
-    velocities = None
+    velocities = A * D ** B
     return velocities
 
+# @profile
+def spherical_terminal_velocity(radius,
+                             eta = (1.81e-5 * u.kg / (u.m * u.s)).si.value,    # fluid dynamic viscosity
+                             rho_F = (1.2754 * u.kg / u.m**3).si.value,  # fluid density - assumed IUPAC for dry (!) air
+                             rho_b = (997 * u.kg / u.m**3).si.value,  # body density - assumed water
+                             g = constants.g0.si.value,
+                             c_1 = 0.0902,
+                             delta_0 = 9.06,
+                             C_0 = 0.29,
+                             alpha = 0.524,
+                             beta = 3,
+                             sigma = 2,
+                             gamma = 0.785,
+                             ):
+    radius = radius.si.value
+    nu = (eta / rho_F)
+    D = 2 * radius            # maximum dimension of the body - diameter
+    vb = 4/3 * np.pi * radius ** 3  # body volume - droplet assumed spherical
+    Area = np.pi * radius ** 2   # cross sectional area
+    X = (2 * vb * (rho_b - rho_F) * g * D**2 / (Area * rho_F * nu**2))
+
+    parenthesis = (1 + c_1 * X**0.5)
+    b_re = 0.5 * c_1 * X ** 0.5 * (parenthesis**0.5 -1)**-1 * parenthesis**-0.5
+    a_re = (delta_0**2 / 4) * (parenthesis ** 0.5 -1)**2 / X ** b_re
+    A = a_re * nu ** (1 - 2 * b_re) * (4 * rho_b * g / (3 * rho_F))**b_re
+    B = 3 * b_re - 1
+    
+    velocities = A * D ** B
+    return velocities * u.m / u.s
+
+# @profile
 def pairwise_probabilities(multiplicities, radii, dt, V, E_jk):
     N = radii.size
     pairs = np.random.permutation(range((N//2)*2)).astype(int)
     permuted_multiplicities = multiplicities[pairs]
     permuted_radii = radii[pairs]
-    terminal_velocities = terminal_velocity(permuted_radii)
+    terminal_velocities = spherical_terminal_velocity(permuted_radii)
     max_multiplicities = np.max(np.vstack((permuted_multiplicities[::2],
                                            permuted_multiplicities[1::2])), axis=0)
 
@@ -67,6 +117,7 @@ def pairwise_probabilities(multiplicities, radii, dt, V, E_jk):
     coalescing_pair_indices = pairs.reshape(int(N/2), 2)[coalescing_pairs]
     return coalescing_pair_indices, gamma[coalescing_pairs]
 
+# @profile
 def apply_coalescence(multiplicity_j, radius_j, multiplicity_k, radius_k):
     if multiplicity_j == multiplicity_k:
         new_multiplicity_j = int(math.floor(multiplicity_j/2))
@@ -86,6 +137,7 @@ def apply_coalescence(multiplicity_j, radius_j, multiplicity_k, radius_k):
         raise ValueError("wat")
     return new_multiplicity_j, new_radius_j, new_multiplicity_k, new_radius_k
 
+# @profile
 @numba.njit
 def simple_coalescence(multiplicity, radii, masses, coalescing_pairs, gamma):
     for i in range(len(coalescing_pairs)):
@@ -116,6 +168,7 @@ def simple_coalescence(multiplicity, radii, masses, coalescing_pairs, gamma):
             raise ValueError("wut?")
 
 
+# @profile
 def droplet_number_density(multiplicity, V):
     return np.sum(multiplicity) / V
 
@@ -127,9 +180,11 @@ def radar_reflectivity_factor(multiplicity, radius, V, z0=1*u.mm**6*u.mm**-3):
     Z = 10 * np.log10(z/z0)
     return Z
 
+# @profile
 def W_estimator(Y, sigma):
     return np.exp(-Y**2 / (2 * sigma**2)) / (np.sqrt(2 * np.pi) * sigma)
 
+# @profile
 def g_estimator(multiplicity, radii, masses, V, sigma0=0.62):
     sigma = sigma0 * radii.size**(-1/5)
     logRadii = np.log(radii.si.value)
@@ -139,6 +194,7 @@ def g_estimator(multiplicity, radii, masses, V, sigma0=0.62):
     return logRadiiPlot, np.sum((multiplicity * masses)[:, np.newaxis] * W, axis=0) / V
 
 
+# @profile
 def simulation(multiplicity, radii, masses, NT, V, E_jk, dt = 0.01 * u.s):
     tables = []
     multiplicity = multiplicity.copy()
@@ -159,18 +215,31 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt = 0.01 * u.s):
 
         if (i % 100) == 0:
             current_diagnostics = {
-                "i": i,
                 "t": i * dt.si.value,
                 "N_superdroplets":N,
-                # "num_coalesced":2 * len(coalescing_pair_indices),
                 "droplet_number_density":droplet_number_density(multiplicity, V).si.value,
-                "mean_radius":radii.si.value.mean(),
                 "median_radius":np.median(radii.si.value)
             }
             
-            tables.append({"g": g_estimator(multiplicity, radii, masses, V), "i": i, "t": i * dt.si.value})
-            diagnostics.append(current_diagnostics)
+            diagnostics.append(dict(**current_diagnostics,
+                **{
+                    "i": i,
+                    "mean_radius":radii.si.value.mean(),
+                }
+                                    ))
             progressbar.set_postfix(**current_diagnostics)
+        if (i % 10000) == 0:
+            logR, logRestim = g_estimator(multiplicity, radii, masses, V)
+            with quantity_support():
+                fig2, axis2 = plt.subplots()
+                axis2.semilogx(np.exp(logR), logRestim, label=f"t = {i * dt.si.value:.1f} s")
+                axis2.axvline(drizzle_cutoff, color="k", label="mżawka - górna granica")
+                axis2.axvline(rain_cutoff, color="r", label="deszcz - górna granica")
+                axis2.legend(loc='best')
+                fig2.savefig(f"{i:08d}_Shima2_radii.png")
+                plt.close()
+                # tables.append({"g": (logR, logRestim)
+                #                "i": i, "t": i * dt.si.value})
     return diagnostics, tables
 
 if __name__ == "__main__":
@@ -182,13 +251,12 @@ if __name__ == "__main__":
         df.to_json("shima2.json")
     else:
         df = pandas.read_json("shima2.json")
+
     plotted = ["N_superdroplets", "droplet_number_density", "mean_radius",
                # "median_radius",
                ]
     fig, axes = plt.subplots(len(plotted), sharex=True)
     # this is not sorted for some reason
-    drizzle_cutoff = 100 * u.um
-    rain_cutoff = 1 * u.mm
     with quantity_support():
         for col, ax in zip(plotted, axes):
             ax.semilogy(df.t, df[col], "o", label=col)
@@ -214,6 +282,6 @@ if __name__ == "__main__":
 
 
     display(df.tail())
-    plt.show()
+    plt.close()
 
 

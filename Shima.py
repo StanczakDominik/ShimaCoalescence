@@ -238,6 +238,8 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt = 0.01 * u.s):
                 axis2.legend(loc='best')
                 fig2.savefig(f"{i:08d}_Shima2_radii.png")
                 plt.close()
+            if N == 1:
+                break
                 # tables.append({"g": (logR, logRestim)
                 #                "i": i, "t": i * dt.si.value})
     return diagnostics, tables

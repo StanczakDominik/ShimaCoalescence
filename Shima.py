@@ -30,7 +30,7 @@ def spherical_terminal_velocity(radius,
     Area = np.pi * radius ** 2   # cross sectional area
     X = 2 * vb * (rho_b - rho_F) * g * D**2 / (Area * rho_F * nu**2)
 
-    parenthesis = (1 + c_1 * X**0.5)
+    parenthesis = 1 + c_1 * X**0.5
     b_re = 0.5 * c_1 * X ** 0.5 * (parenthesis**0.5 -1)**-1 * parenthesis**-0.5
     a_re = (delta_0**2 / 4) * (parenthesis ** 0.5 -1)**2 / X ** b_re
     A = a_re * nu ** (1 - 2 * b_re) * (4 * rho_b * g / (3 * rho_F))**b_re

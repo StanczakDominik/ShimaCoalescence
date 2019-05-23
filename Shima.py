@@ -15,24 +15,20 @@ rain_cutoff = 1 * u.mm
 
 # @profile
 def spherical_terminal_velocity(radius,
-                             eta = (1.81e-5 * u.kg / (u.m * u.s)).si.value,    # fluid dynamic viscosity
-                             rho_F = (1.2754 * u.kg / u.m**3).si.value,  # fluid density - assumed IUPAC for dry (!) air
-                             rho_b = (997 * u.kg / u.m**3).si.value,  # body density - assumed water
-                             g = constants.g0.si.value,
-                             c_1 = 0.0902,
-                             delta_0 = 9.06,
-                             C_0 = 0.29,
-                             alpha = 0.524,
-                             beta = 3,
-                             sigma = 2,
-                             gamma = 0.785,
-                             ):
+                                eta = (1.81e-5 * u.kg / (u.m * u.s)).si.value,    # fluid dynamic viscosity
+                                rho_F = (1.2754 * u.kg / u.m**3).si.value,  # fluid density - assumed IUPAC for dry (!) air
+                                rho_b = (997 * u.kg / u.m**3).si.value,  # body density - assumed water
+                                g = constants.g0.si.value,
+                                c_1 = 0.0902,
+                                delta_0 = 9.06,
+                                C_0 = 0.29,
+                                ):
     radius = radius.si.value
-    nu = (eta / rho_F)
+    nu = eta / rho_F
     D = 2 * radius            # maximum dimension of the body - diameter
     vb = 4/3 * np.pi * radius ** 3  # body volume - droplet assumed spherical
     Area = np.pi * radius ** 2   # cross sectional area
-    X = (2 * vb * (rho_b - rho_F) * g * D**2 / (Area * rho_F * nu**2))
+    X = 2 * vb * (rho_b - rho_F) * g * D**2 / (Area * rho_F * nu**2)
 
     parenthesis = (1 + c_1 * X**0.5)
     b_re = 0.5 * c_1 * X ** 0.5 * (parenthesis**0.5 -1)**-1 * parenthesis**-0.5
@@ -41,6 +37,7 @@ def spherical_terminal_velocity(radius,
     B = 3 * b_re - 1
     
     velocities = A * D ** B
+    # TODO sprawdzić asymptotykę
     return velocities * u.m / u.s
 
 # @profile
@@ -169,7 +166,10 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt = 0.01 * u.s):
                 "t": i * dt.si.value,
                 "N_superdroplets":N,
                 "droplet_number_density":droplet_number_density(multiplicity, V).si.value,
-                "median_radius":np.median(radii.si.value)
+                "median_radius":np.median(radii.si.value),
+                "mult_dtype": multiplicity.dtype,
+                "radii_dtype": radii.dtype,
+                "masses_dtype": masses_dtype,
             }
             
             diagnostics.append(dict(**current_diagnostics,

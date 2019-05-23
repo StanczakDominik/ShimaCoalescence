@@ -16,7 +16,7 @@ r_average = 30.531 * u.micron
 v_average = 4 * np.pi / 3 * r_average ** 3
 exponential_distribution = scipy.stats.expon(0, v_average.to(u.m**3))
 
-volumes = exponential_distribution.rvs(N) * u.m**3
+volumes = (exponential_distribution.rvs(N) * u.m**3).astype(np.float32)
 radii = (3 * volumes / (4 * np.pi))**(1/3)
 masses = volumes * density_solute
 E_jk = 2

@@ -13,55 +13,6 @@ import numba
 drizzle_cutoff = 100 * u.um
 rain_cutoff = 1 * u.mm
 
-def terminal_velocity(radius, rho_a = None, rho_a0 = 1.2e-3 * u.g * u.cm**-3):
-    if rho_a is None:
-        rho_a = rho_a0
-    """ Rogers (1976), page 2 of Terminal Velocities of Droplets and Crystals: Power Laws with Continuous Parameters over the Size Spectrum
-    """
-    k1 = 1.19e6 / u.cm / u.s
-    k2 = 8e3 / u.s
-    indices_turbulent = radius > 40 * u.micrometer
-    indices_sqrt = radius > 600 * u.micrometer
-    velocities = u.Quantity(np.empty(radius.size), unit=u.m/u.s)
-    velocities[indices_turbulent] = k1 * radius[indices_turbulent] ** 2
-    velocities[~indices_turbulent] = k2 * radius[~indices_turbulent]
-    # TODO get some rho_a0, rho_a approximations)
-    k3 = 2.2e3 * u.cm**0.5 / u.s * (rho_a0 / rho_a) ** 0.5
-    velocities[indices_sqrt] = k3 * radius[indices_sqrt]**0.5
-    return velocities
-
-def better_terminal_velocity(radius,
-                             eta = (1.81e-5 * u.kg / (u.m * u.s)).si.value,    # fluid dynamic viscosity
-                             rho_F = (1.2754 * u.kg / u.m**3).si.value,  # fluid density - assumed IUPAC for dry (!) air
-                             rho_b = (997 * u.kg / u.m**3).si.value,  # body density - assumed water
-                             g = constants.g0.si.value,
-                             c_1 = 0.0902,
-                             delta_0 = 9.06,
-                             C_0 = 0.29,
-                             alpha = 0.524,
-                             beta = 3,
-                             sigma = 2,
-                             gamma = 0.785,
-                             ):
-    nu = eta / rho_F          # fluid kinematic viscosity
-    D = 2 * radius            # maximum dimension of the body - diameter
-    vb = 4/3 * np.pi * radius ** 3  # body volume - droplet assumed spherical
-    Area = np.pi * radius ** 2   # cross sectional area
-    X = 2 * vb * (rho_b - rho_F) * g * D**2 / (Area * rho_F * nu**2)
-    # phi = (delta_0**2 / 4) * ((1 + c_1 * X**0.5)**0.5 -1)**2
-    # phiprime = ((1 + c_1 * X ** 0.5)**0.5 -1) * (1 + c_1 * X**0.5)**(-0.5) * X **(-0.5) / (2 * C_0**0.5)
-    # b_re = X * phiprime / phi
-    # a_re = phi / X ** b_re
-
-    parenthesis = (1 + c_1 * X**0.5)
-    b_re = 0.5 * c_1 * X ** 0.5 * (parenthesis**0.5 -1)**-1 * parenthesis**-0.5
-    a_re = (delta_0**2 / 4) * (parenthesis ** 0.5 -1)**2 / X ** b_re
-    A = a_re * nu ** (1 - 2 * b_re) * (2 * alpha * g / (rho_F * gamma))**b_re
-    B = b_re * (beta - sigma + 2) - 1
-    
-    velocities = A * D ** B
-    return velocities
-
 # @profile
 def spherical_terminal_velocity(radius,
                              eta = (1.81e-5 * u.kg / (u.m * u.s)).si.value,    # fluid dynamic viscosity
@@ -284,6 +235,7 @@ if __name__ == "__main__":
 
 
     display(df.tail())
-    plt.close()
+    # plt.close()
+    plt.show()
 
 

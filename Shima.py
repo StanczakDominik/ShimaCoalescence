@@ -13,17 +13,17 @@ import numba
 drizzle_cutoff = 100 * u.um
 rain_cutoff = 1 * u.mm
 
-# @profile
-def spherical_terminal_velocity(radius,
-                                eta = (1.81e-5 * u.kg / (u.m * u.s)).si.value,    # fluid dynamic viscosity
-                                rho_F = (1.2754 * u.kg / u.m**3).si.value,  # fluid density - assumed IUPAC for dry (!) air
-                                rho_b = (997 * u.kg / u.m**3).si.value,  # body density - assumed water
-                                g = constants.g0.si.value,
-                                c_1 = 0.0902,
-                                delta_0 = 9.06,
-                                C_0 = 0.29,
-                                ):
-    radius = radius.si.value
+eta = (1.81e-5 * u.kg / (u.m * u.s)).si.value    # fluid dynamic viscosity
+rho_F = (1.2754 * u.kg / u.m**3).si.value  # fluid density - assumed IUPAC for dry (!) air
+rho_b = (997 * u.kg / u.m**3).si.value  # body density - assumed water
+g = constants.g0.si.value
+c_1 = 0.0902
+delta_0 = 9.06
+C_0 = 0.29
+# @numba.njit
+
+@numba.vectorize('float32(float32)', target='parallel')
+def spherical_terminal_velocity(radius):
     nu = eta / rho_F
     D = 2 * radius            # maximum dimension of the body - diameter
     vb = 4/3 * np.pi * radius ** 3  # body volume - droplet assumed spherical
@@ -37,16 +37,15 @@ def spherical_terminal_velocity(radius,
     B = 3 * b_re - 1
     
     velocities = A * D ** B
-    # TODO sprawdzić asymptotykę
-    return velocities * u.m / u.s
+    return velocities
 
-# @profile
 def pairwise_probabilities(multiplicities, radii, dt, V, E_jk):
     N = radii.size
-    pairs = np.random.permutation(range((N//2)*2)).astype(int)
+    pairs = np.random.permutation((N//2)*2)
     permuted_multiplicities = multiplicities[pairs]
     permuted_radii = radii[pairs]
     terminal_velocities = spherical_terminal_velocity(permuted_radii)
+
     max_multiplicities = np.max(np.vstack((permuted_multiplicities[::2],
                                            permuted_multiplicities[1::2])), axis=0)
 
@@ -65,33 +64,12 @@ def pairwise_probabilities(multiplicities, radii, dt, V, E_jk):
     coalescing_pair_indices = pairs.reshape(int(N/2), 2)[coalescing_pairs]
     return coalescing_pair_indices, gamma[coalescing_pairs]
 
-# @profile
-def apply_coalescence(multiplicity_j, radius_j, multiplicity_k, radius_k):
-    if multiplicity_j == multiplicity_k:
-        new_multiplicity_j = int(math.floor(multiplicity_j/2))
-        new_multiplicity_k = multiplicity_j - new_multiplicity_j
-        new_radius_j = new_radius_k = (radius_j**3 + radius_k**3)**(1/3)
-    elif multiplicity_j > multiplicity_k:
-        new_multiplicity_j = multiplicity_j - multiplicity_k
-        new_multiplicity_k = multiplicity_k
-        new_radius_j = radius_j
-        new_radius_k = (radius_j **3 + radius_k**3)**(1/3)
-    elif multiplicity_j < multiplicity_k:
-        new_multiplicity_k = multiplicity_k - multiplicity_j
-        new_multiplicity_j = multiplicity_j
-        new_radius_k = radius_k
-        new_radius_j = (radius_k **3 + radius_j**3)**(1/3)
-    else:
-        raise ValueError("wat")
-    return new_multiplicity_j, new_radius_j, new_multiplicity_k, new_radius_k
-
-# @profile
 @numba.njit
 def simple_coalescence(multiplicity, radii, masses, coalescing_pairs, gamma):
-    for i in range(len(coalescing_pairs)):
+    N_pairs = coalescing_pairs.shape[0]
+    for i in range(N_pairs):
         j, k = coalescing_pairs[i]
         pair_gamma = gamma[i]
-    # for (j, k), pair_gamma in zip(coalescing_pairs, gamma):
         if multiplicity[j] < multiplicity[k]:
             j, k = k, j  # swap indices
         ej = multiplicity[j]
@@ -106,7 +84,7 @@ def simple_coalescence(multiplicity, radii, masses, coalescing_pairs, gamma):
             # masses[j] = unchanged
             masses[k] += gamma_eff * masses[j]
             # x unchanged on both counts
-        elif ej == gamma_eff * ek:
+        elif ej == gamma_eff * ek:    # TODO float comparison?
             multiplicity[j] = math.floor(ek/2)
             multiplicity[k] -= multiplicity[j]
             radii[j] = radii[k] = (gamma_eff * radii[j]**3 + radii[k]**3)**(1/3)
@@ -116,7 +94,6 @@ def simple_coalescence(multiplicity, radii, masses, coalescing_pairs, gamma):
             raise ValueError("wut?")
 
 
-# @profile
 def droplet_number_density(multiplicity, V):
     return np.sum(multiplicity) / V
 
@@ -128,29 +105,35 @@ def radar_reflectivity_factor(multiplicity, radius, V, z0=1*u.mm**6*u.mm**-3):
     Z = 10 * np.log10(z/z0)
     return Z
 
-# @profile
+@numba.vectorize(['float32(float32, float32)',
+                  'float64(float64, float64)',
+                  ],
+                 target='parallel')
 def W_estimator(Y, sigma):
     return np.exp(-Y**2 / (2 * sigma**2)) / (np.sqrt(2 * np.pi) * sigma)
 
-# @profile
-def g_estimator(multiplicity, radii, masses, V, sigma0=0.62):
+def g_estimator(multiplicity, radii, masses, V, logRadiiPlot, sigma0=0.62):
+    # TODO rewrite via numba
     sigma = sigma0 * radii.size**(-1/5)
-    logRadii = np.log(radii.si.value)
-    logRadiiPlot = np.linspace(logRadii.min() - 2, logRadii.max() + 2, 2000)
+    logRadii = np.log(radii)
     argW = logRadiiPlot.reshape(1, logRadiiPlot.size) - logRadii[:, np.newaxis]
     W = W_estimator(argW, sigma)
-    return logRadiiPlot, np.sum((multiplicity * masses)[:, np.newaxis] * W, axis=0) / V
+    return np.sum((multiplicity * masses)[:, np.newaxis] * W, axis=0) / V
 
 
-# @profile
-def simulation(multiplicity, radii, masses, NT, V, E_jk, dt = 0.01 * u.s):
+def simulation(multiplicity, radii, masses, NT, V, E_jk, dt, radii_min_plot = 1e-7, radii_max_plot = 1e-2):
     tables = []
     multiplicity = multiplicity.copy()
     radii = radii.copy()
     masses = masses.copy()
     diagnostics = []
     progressbar = tqdm.trange(NT)
+
+    waiting_for_drizzle = True
+    waiting_for_rain = True
+    logRadiiPlot = np.log(np.logspace(np.log10(radii_min_plot), np.log10(radii_max_plot), 2000))
     for i in progressbar:
+        # simulation loop
         N = radii.size # this can change dynamically
         coalescing_pair_indices, gamma = pairwise_probabilities(multiplicity, radii, dt, V, E_jk)
         if len(coalescing_pair_indices) > 0:
@@ -161,42 +144,46 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt = 0.01 * u.s):
         radii = radii[~removed_particles]
         masses = masses[~removed_particles]
 
-        if (i % 100) == 0:
+        # diagnostics
+        if waiting_for_drizzle and (radii.max() > drizzle_cutoff.si.value):
+            progressbar.write(f"radii max: {radii.max():.2e} m, drizzle achieved at iteration {i}")
+            waiting_for_drizzle = False
+        if waiting_for_rain and (radii.max() > rain_cutoff.si.value):
+            progressbar.write(f"radii max: {radii.max():.2e} m, rain achieved at iteration {i}")
+            waiting_for_rain = False
+
+        if (i % 10) == 0:
+                
             current_diagnostics = {
-                "t": i * dt.si.value,
-                "N_superdroplets":N,
-                "droplet_number_density":droplet_number_density(multiplicity, V).si.value,
-                "median_radius":np.median(radii.si.value),
-                "mult_dtype": multiplicity.dtype,
-                "radii_dtype": radii.dtype,
-                "masses_dtype": masses_dtype,
+                "t": i * dt,
+                "N superdroplets [1]":N,
+                "max radius [m]":np.max(radii),
+                # "mult_dtype": multiplicity.dtype,
+                # "radii_dtype": radii.dtype,
+                # "masses_dtype": masses.dtype,
             }
             
             diagnostics.append(dict(**current_diagnostics,
                 **{
                     "i": i,
-                    "mean_radius":radii.si.value.mean(),
+                    "Droplet number density [m^-3]":droplet_number_density(multiplicity, V),
+                    "median radius [m]":np.median(radii),
+                    "mean_radius":radii.mean(),
+                    "std_radius":radii.std(),
                 }
                                     ))
             progressbar.set_postfix(**current_diagnostics)
-        if (i % 10000) == 0:
-            logR, logRestim = g_estimator(multiplicity, radii, masses, V)
-            with quantity_support():
-                fig2, axis2 = plt.subplots()
-                axis2.semilogx(np.exp(logR), logRestim, label=f"t = {i * dt.si.value:.1f} s")
-                axis2.axvline(drizzle_cutoff, color="k", label="mżawka - górna granica")
-                axis2.axvline(rain_cutoff, color="r", label="deszcz - górna granica")
-                axis2.legend(loc='best')
-                fig2.savefig(f"{i:08d}_Shima2_radii.png")
-                plt.close()
+        if (i % 600) == 0:
+            logRestim = g_estimator(multiplicity, radii, masses, V, logRadiiPlot)
             if N == 1:
+                progress.bar(f"One superdroplet remaining at {i}; there's no more interesting dynamics to be had so I'm shutting this down")
                 break
-                # tables.append({"g": (logR, logRestim)
-                #                "i": i, "t": i * dt.si.value})
+            tables.append({"g": (logRadiiPlot, logRestim),
+                           "i": i, "t": i * dt})
     return diagnostics, tables
 
-if __name__ == "__main__":
-    from config import *
+from config import *
+def main(plot = False):
 
     if new_run:
         diagnostics, tables = simulation(multiplicity, radii, masses, NT, V, E_jk=E_jk, dt = dt)
@@ -205,37 +192,53 @@ if __name__ == "__main__":
     else:
         df = pandas.read_json("shima2.json")
 
-    plotted = ["N_superdroplets", "droplet_number_density", "mean_radius",
-               # "median_radius",
+    plotted = ["N superdroplets [1]",
+               "Droplet number density [m^-3]",
+               "median radius [m]",
+               "max radius [m]",
                ]
+    units = [1, u.m**-3, u.m, u.m]
     fig, axes = plt.subplots(len(plotted), sharex=True)
     # this is not sorted for some reason
-    with quantity_support():
-        for col, ax in zip(plotted, axes):
-            ax.semilogy(df.t, df[col], "o", label=col)
-            ax.set_title(col)
-            ax.set_xlim(df.t.min(), df.t.max())
-            if "radius" in col:
-                ax.axhline(drizzle_cutoff, color="k", label="mżawka - górna granica")
-                ax.axhline(rain_cutoff, color="r", label="deszcz - górna granica")
-            ax.legend(loc='best')
-        fig.savefig("Shima2.png")
-        try:
-            tables
-            fig2, axis2 = plt.subplots()
-            for T in tables:
-                logR, logRestim = T['g']
-                axis2.semilogx(np.exp(logR), logRestim, label=f"t = {T['t']:.1f} s")
-            axis2.axvline(drizzle_cutoff, color="k", label="mżawka - górna granica")
-            axis2.axvline(rain_cutoff, color="r", label="deszcz - górna granica")
-            axis2.legend(loc='best')
-            fig2.savefig("Shima2_radii.png")
-        except NameError:
-            pass
+    for col, unit, ax in zip(plotted, units, axes):
+        ax.semilogy(df.t, df[col] * unit, ".", label=col)
+        ax.set_title(col)
+        ax.set_xlim(df.t.min(), df.t.max())
+        if "radius" in col:
+            # ax.fill_between(df.t,
+            #                 (df[col] - df['std_radius']) * unit,
+            #                 (df[col] + df['std_radius']) * unit,
+            #                 alpha=0.5,
+            #                 )
+            ax.axhline(drizzle_cutoff.si.value, color="k", label="drizzle")
+            ax.axhline(rain_cutoff.si.value, color="r", label="rain")
+        ax.legend(loc='best')
+        ax.set_ylabel(col)
+    ax.set_xlabel("time [s]")
+    fig.savefig("Shima2.png")
+    try:
+        tables
+    except NameError:
+        print("Can only plot radial distributions after fresh sim run")
+    else:
+        fig2, axis2 = plt.subplots()
+        for T in tables:
+            logR, logRestim = T['g']
+            axis2.semilogx(np.exp(logR), logRestim, label=f"t = {T['t']:.1f} s")
+        axis2.axvline(drizzle_cutoff.si.value, color="k", label="drizzle")
+        axis2.axvline(rain_cutoff.si.value, color="r", label="rain")
+        axis2.legend(loc='best')
+        axis2.set_xlabel("radius [m]")
+        axis2.set_title("Shima's radius kernel estimator")
+        fig2.savefig("Shima2_radii.png")
 
 
     display(df.tail())
-    # plt.close()
-    plt.show()
+    if plot:
+        plt.show()
+    else:
+        plt.close()
 
 
+if __name__ == "__main__":
+    main(False)

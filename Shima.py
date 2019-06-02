@@ -9,6 +9,7 @@ from astropy.visualization import quantity_support
 import math
 from IPython.display import display
 import numba
+import diagnostics
 
 drizzle_cutoff = 100 * u.um
 rain_cutoff = 1 * u.mm
@@ -49,7 +50,7 @@ def pairwise_probabilities(multiplicities, radii, dt, V, E_jk):
     max_multiplicities = np.max(np.vstack((permuted_multiplicities[::2],
                                            permuted_multiplicities[1::2])), axis=0)
 
-    P_pairs = E_jk * np.pi * (permuted_radii[::2] + permuted_radii[1::2])**2 * dt / V * \
+    P_pairs = (E_jk * dt / V * np.pi) * (permuted_radii[::2] + permuted_radii[1::2])**2 * \
         np.abs(terminal_velocities[::2] - terminal_velocities[1::2])
 
     fixed_probabilities = max_multiplicities * P_pairs * N * (N-1) / (2 * int(N/2))
@@ -92,33 +93,6 @@ def simple_coalescence(multiplicity, radii, masses, coalescing_pairs, gamma):
             # x unchanged on both counts
         else:
             raise ValueError("wut?")
-
-
-def droplet_number_density(multiplicity, V):
-    return np.sum(multiplicity) / V
-
-def precipitation_rate(multiplicity, radius, V):
-    return np.pi / 6.0 / V * np.sum(multiplicity * (2 * radius)**3 * terminal_velocity(radius))
-
-def radar_reflectivity_factor(multiplicity, radius, V, z0=1*u.mm**6*u.mm**-3):
-    z = np.sum(multiplicity * (2 * radius)**6) / V
-    Z = 10 * np.log10(z/z0)
-    return Z
-
-@numba.vectorize(['float32(float32, float32)',
-                  'float64(float64, float64)',
-                  ],
-                 target='parallel')
-def W_estimator(Y, sigma):
-    return np.exp(-Y**2 / (2 * sigma**2)) / (np.sqrt(2 * np.pi) * sigma)
-
-def g_estimator(multiplicity, radii, masses, V, logRadiiPlot, sigma0=0.62):
-    # TODO rewrite via numba
-    sigma = sigma0 * radii.size**(-1/5)
-    logRadii = np.log(radii)
-    argW = logRadiiPlot.reshape(1, logRadiiPlot.size) - logRadii[:, np.newaxis]
-    W = W_estimator(argW, sigma)
-    return np.sum((multiplicity * masses)[:, np.newaxis] * W, axis=0) / V
 
 
 def simulation(multiplicity, radii, masses, NT, V, E_jk, dt, radii_min_plot = 1e-7, radii_max_plot = 1e-2):
@@ -166,7 +140,7 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt, radii_min_plot = 1e
             diagnostics.append(dict(**current_diagnostics,
                 **{
                     "i": i,
-                    "Droplet number density [m^-3]":droplet_number_density(multiplicity, V),
+                    "Droplet number density [m^-3]":diagnostics.droplet_number_density(multiplicity, V),
                     "median radius [m]":np.median(radii),
                     "mean_radius":radii.mean(),
                     "std_radius":radii.std(),
@@ -174,7 +148,7 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt, radii_min_plot = 1e
                                     ))
             progressbar.set_postfix(**current_diagnostics)
         if (i % 600) == 0:
-            logRestim = g_estimator(multiplicity, radii, masses, V, logRadiiPlot)
+            logRestim = diagnostics.g_estimator(multiplicity, radii, masses, V, logRadiiPlot)
             if N == 1:
                 progress.bar(f"One superdroplet remaining at {i}; there's no more interesting dynamics to be had so I'm shutting this down")
                 break

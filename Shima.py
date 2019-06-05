@@ -95,12 +95,12 @@ def simple_coalescence(multiplicity, radii, masses, coalescing_pairs, gamma):
             raise ValueError("wut?")
 
 
-def simulation(multiplicity, radii, masses, NT, V, E_jk, dt, radii_min_plot = 1e-7, radii_max_plot = 1e-2):
+def simulation(multiplicity, radii, masses, NT, V, E_jk, dt, radii_min_plot = 1e-7, radii_max_plot = 1e-2, save_small=10, save_large = 600):
     tables = []
     multiplicity = multiplicity.copy()
     radii = radii.copy()
     masses = masses.copy()
-    diagnostics = []
+    saved_diagnostics = []
     progressbar = tqdm.trange(NT)
 
     waiting_for_drizzle = True
@@ -126,18 +126,16 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt, radii_min_plot = 1e
             progressbar.write(f"radii max: {radii.max():.2e} m, rain achieved at iteration {i}")
             waiting_for_rain = False
 
-        if (i % 10) == 0:
+        if (i % save_small) == 0:
                 
             current_diagnostics = {
                 "t": i * dt,
                 "N superdroplets [1]":N,
                 "max radius [m]":np.max(radii),
-                # "mult_dtype": multiplicity.dtype,
-                # "radii_dtype": radii.dtype,
-                # "masses_dtype": masses.dtype,
             }
+            progressbar.set_postfix(**current_diagnostics)
             
-            diagnostics.append(dict(**current_diagnostics,
+            saved_diagnostics.append(dict(**current_diagnostics,
                 **{
                     "i": i,
                     "Droplet number density [m^-3]":diagnostics.droplet_number_density(multiplicity, V),
@@ -146,25 +144,25 @@ def simulation(multiplicity, radii, masses, NT, V, E_jk, dt, radii_min_plot = 1e
                     "std_radius":radii.std(),
                 }
                                     ))
-            progressbar.set_postfix(**current_diagnostics)
-        if (i % 600) == 0:
+        if (i % save_large) == 0:
             logRestim = diagnostics.g_estimator(multiplicity, radii, masses, V, logRadiiPlot)
             if N == 1:
                 progress.bar(f"One superdroplet remaining at {i}; there's no more interesting dynamics to be had so I'm shutting this down")
                 break
             tables.append({"g": (logRadiiPlot, logRestim),
                            "i": i, "t": i * dt})
-    return diagnostics, tables
+    return saved_diagnostics, tables
 
 from config import *
 def main(plot = False):
 
     if new_run:
-        diagnostics, tables = simulation(multiplicity, radii, masses, NT, V, E_jk=E_jk, dt = dt)
+        diagnostics, tables = simulation(multiplicity, radii, masses, NT, V, E_jk=E_jk, dt = dt, save_small=save_small, save_large=save_large)
         df = pandas.DataFrame(diagnostics)
         df.to_json("shima2.json")
     else:
-        df = pandas.read_json("shima2.json")
+        df = pandas.read_json("shima2.json").sort_index()
+    display(df)
 
     plotted = ["N superdroplets [1]",
                "Droplet number density [m^-3]",
@@ -175,7 +173,7 @@ def main(plot = False):
     fig, axes = plt.subplots(len(plotted), sharex=True)
     # this is not sorted for some reason
     for col, unit, ax in zip(plotted, units, axes):
-        ax.semilogy(df.t, df[col] * unit, ".", label=col)
+        ax.semilogy(df.t, df[col] * unit, "-", label=col)
         ax.set_title(col)
         ax.set_xlim(df.t.min(), df.t.max())
         if "radius" in col:
@@ -215,4 +213,4 @@ def main(plot = False):
 
 
 if __name__ == "__main__":
-    main(False)
+    main(True)

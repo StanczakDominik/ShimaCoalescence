@@ -6,11 +6,13 @@ np.random.seed(4)
 
 V = 1e6 * u.m**3 # coalescence cell volume
 n0 = 2**23 / u.m**3 # initial number density of droplets
-N = int(2**17) # initial number of super-droplets
-dt = (0.1 * u.s).si.value
-NT = int(40000)
+N = int(2**18) # initial number of super-droplets
+dt = (0.01 * u.s).si.value
+NT = int(400000)
 density_solute = 1 * u.g / u.m**3
 E_jk = 0.5
+save_small = 10 * 100
+save_large = 600 * 100
 
 radii_min_plot = 1e-7
 radii_max_plot = 1e-2

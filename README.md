@@ -7,5 +7,5 @@ Needs some cleaning up, but works decently well.
 
 # Results
 
-![Time plot](time_plot.png)
-![Time evolution of radius](radius_estimator.png)
+![Time plot](results/time_plot.png)
+![Time evolution of radius](results/radius_estimator.png)

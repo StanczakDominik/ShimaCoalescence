@@ -6,7 +6,7 @@ np.random.seed(4)
 
 V = 1e6 * u.m**3 # coalescence cell volume
 n0 = 2**23 / u.m**3 # initial number density of droplets
-N = int(2**18) # initial number of super-droplets
+N = int(2**17) # initial number of super-droplets
 dt = (0.01 * u.s).si.value
 NT = int(400000)
 density_solute = 1 * u.g / u.m**3
